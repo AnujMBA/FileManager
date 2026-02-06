@@ -1,402 +1,245 @@
-const fs = require("fs").promises; // Async FS
-const fsSync = require("fs"); // Sync FS (for streams/constants)
+const fs = require("fs").promises;
+const fsSync = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 const { pipeline } = require("stream/promises");
-const os = require('os');
+const os = require("os");
 require("colors");
 
-// --- CONFIGURATION & HELPERS ---
+// ==========================================
+// 1. CONFIGURATION & PRIVATE HELPERS
+// ==========================================
 
-const dirPath = path.join(__dirname, "my_files");
-const backupDir = path.join(dirPath, 'backups');
+const CONFIG = {
+  baseDir: path.join(__dirname, "my_files"),
+  backupDir: path.join(__dirname, "my_files", "backups"),
+};
 
-// Ensure directory exists on startup
-if (!fsSync.existsSync(dirPath)) {
-  fsSync.mkdirSync(dirPath);
-}
+// Initialization: Create folders if missing
+Object.values(CONFIG).forEach((dir) => {
+  if (!fsSync.existsSync(dir)) fsSync.mkdirSync(dir, { recursive: true });
+});
 
-// Helper: Get full path
-const getFilePath = (filename) => path.join(dirPath, filename);
+// Paths Helpers
+const resolvePath = (filename) => path.join(CONFIG.baseDir, filename);
+const resolveBackup = (filename) => path.join(CONFIG.backupDir, `${filename}.bak`);
 
+// Console Helpers
+const logSuccess = (msg) => console.log(`${msg}`.green.bold);
+const formatBytes = (bytes) => `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 
-const createBackup = async (filename) => {
+// Error Handler Wrapper (HOC)
+const withErrorHandling = (fn, operationName) => {
+  return async (...args) => {
     try {
-        const originalPath = getFilePath(filename);
-        const backupPath = path.join(backupDir, filename + '.bak'); // e.g., story.txt.bak
-
-        // Check karein file hai ya nahi (New file create karte waqt backup nahi chahiye)
-        try {
-            await fs.access(originalPath);
-            await fs.copyFile(originalPath, backupPath);
-
-            console.log(`(Backup saved to: backups/${filename}.bak)`.grey);
-        } catch (err) {
-        }
+      await fn(...args);
     } catch (error) {
-        console.log(` Warning: Could not create backup for '${filename}'`.yellow);
+      const target = typeof operationName === 'function' ? operationName(...args) : 'operation';
+      
+      const errorMap = {
+        'ENOENT': `Error: '${target}' not found!`,
+        'EEXIST': `Error: '${target}' already exists!`,
+        'ENOTEMPTY': `Error: Folder '${target}' is not empty!`
+      };
+
+      const msg = errorMap[error.code] || `Error (${target}): ${error.message}`;
+      console.log(msg.red.bold);
     }
+  };
 };
 
-// Helper: Standardized Error Handler
-const handleError = (error, operation, targetName) => {
-  if (error.code === "ENOENT") {
-    console.log(` Error: '${targetName}' not found!`.red.bold);
-  } else if (error.code === "EEXIST") {
-    console.log(` Error: '${targetName}' already exists!`.red.bold);
-  } else if (error.code === "ENOTEMPTY") {
-    console.log(` Error: Folder '${targetName}' is not empty!`.red.bold);
-  } else {
-    console.log(` Error ${operation}: ${error.message}`.red);
-  }
-};
-
-// Helper: Success Logger
-const logSuccess = (msg) => console.log(msg.green.bold);
-
-// ==========================================
-// 1. CORE FILE OPERATIONS (Create, Read, Delete)
-// ==========================================
-
-const createFile = async (filename, content) => {
-  const filePath = getFilePath(filename);
-  const folderPath = path.dirname(filePath);
-
+// Internal: Create Backup
+const ensureBackup = async (filename) => {
   try {
-    // Auto-create directories if they don't exist
-    await fs.mkdir(folderPath, { recursive: true });
+    const src = resolvePath(filename);
+    const dest = resolveBackup(filename);
+    await fs.access(src); // Check existence
+    await fs.copyFile(src, dest);
+    console.log(` (Backup created: ${filename}.bak)`.grey.italic);
+  } catch (e) { /* Ignore if file doesn't exist */ }
+};
+
+// ==========================================
+// 2. CORE FILE OPERATIONS
+// ==========================================
+
+const coreOps = {
+  createFile: withErrorHandling(async (filename, content) => {
+    const filePath = resolvePath(filename);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, content);
-    logSuccess(` Success: File created at '${filename}'!`);
-  } catch (error) {
-    handleError(error, "creating file", filename);
-  }
-};
+    logSuccess(`File created: ${filename}`);
+  }, (f) => f),
 
-const readFile = async (filename) => {
-  try {
-    const data = await fs.readFile(getFilePath(filename), "utf-8");
-    console.log(`\ Content of '${filename}':`.yellow);
+  readFile: withErrorHandling(async (filename) => {
+    const data = await fs.readFile(resolvePath(filename), "utf-8");
+    console.log(`\nContent of '${filename}':`.yellow);
     console.log(data.cyan);
-  } catch (error) {
-    handleError(error, "reading file", filename);
-  }
-};
+  }, (f) => f),
 
-const deleteFile = async (filename) => {
-  try {
-    await fs.unlink(getFilePath(filename));
-    console.log(` Success: '${filename}' deleted successfully.`.magenta);
-  } catch (error) {
-    handleError(error, "deleting file", filename);
-  }
-};
+  deleteFile: withErrorHandling(async (filename) => {
+    await fs.unlink(resolvePath(filename));
+    logSuccess(`Deleted: ${filename}`);
+  }, (f) => f),
 
-const appendToFile = async (filename, content) => {
-  try {
+  appendToFile: withErrorHandling(async (filename, content) => {
+    await ensureBackup(filename);
+    await fs.appendFile(resolvePath(filename), "\n" + content);
+    logSuccess(`Appended to: ${filename}`);
+  }, (f) => f),
 
-    await createBackup(filename);
+  renameFile: withErrorHandling(async (oldName, newName) => {
+    await fs.rename(resolvePath(oldName), resolvePath(newName));
+    logSuccess(`Renamed '${oldName}' to '${newName}'`);
+  }, (f) => f),
 
-    await fs.appendFile(getFilePath(filename), "\n" + content);
-    console.log(` Success: Content appended to '${filename}'!`.blue.bold);
-  } catch (error) {
-    handleError(error, "appending file", filename);
-  }
-};
-
-const renameFile = async (oldName, newName) => {
-  try {
-    await fs.rename(getFilePath(oldName), getFilePath(newName));
-    logSuccess(` Success: '${oldName}' renamed to '${newName}'!`);
-  } catch (error) {
-    handleError(error, "renaming file", oldName);
-  }
+  copyFile: withErrorHandling(async (src, dest) => {
+    await fs.copyFile(resolvePath(src), resolvePath(dest), fsSync.constants.COPYFILE_EXCL);
+    logSuccess(`Copied '${src}' to '${dest}'`);
+  }, (f) => f),
 };
 
 // ==========================================
-// 2. FOLDER OPERATIONS
+// 3. FOLDER OPERATIONS
 // ==========================================
 
-const createFolder = async (folderName) => {
-  try {
-    await fs.mkdir(getFilePath(folderName), { recursive: true });
-    logSuccess(` Success: Folder '${folderName}' created!`);
-  } catch (error) {
-    handleError(error, "creating folder", folderName);
-  }
-};
+const folderOps = {
+  createFolder: withErrorHandling(async (name) => {
+    await fs.mkdir(resolvePath(name), { recursive: true });
+    logSuccess(`Folder created: ${name}`);
+  }, (n) => n),
 
-const deleteFolder = async (folderName) => {
-  try {
-    // recursive: true allows deleting folders with files inside
-    await fs.rm(getFilePath(folderName), { recursive: true, force: true });
-    console.log(` Success: Folder '${folderName}' deleted!`.magenta);
-  } catch (error) {
-    handleError(error, "deleting folder", folderName);
-  }
-};
+  deleteFolder: withErrorHandling(async (name) => {
+    await fs.rm(resolvePath(name), { recursive: true, force: true });
+    logSuccess(`Folder deleted: ${name}`);
+  }, (n) => n),
 
-// ==========================================
-// 3. ADVANCED OPERATIONS (Copy, Move, Info, List)
-// ==========================================
-
-const getFileInfo = async (filename) => {
-  try {
-    const stats = await fs.stat(getFilePath(filename));
-    console.log(`\n --- File Information: ${filename} ---`.cyan.bold);
-    console.log(` Size: ${(stats.size / 1024).toFixed(2)} KB`.yellow);
-    console.log(` Created: ${stats.birthtime.toLocaleString()}`.green);
-    console.log(` Modified: ${stats.mtime.toLocaleString()}`.blue);
-    console.log(` Permissions: ${stats.mode}`.grey);
-  } catch (error) {
-    handleError(error, "getting info", filename);
-  }
-};
-
-const listFiles = async () => {
-  try {
-    const files = await fs.readdir(dirPath, { withFileTypes: true });
-    console.log(`\n Files in Directory:`.bgMagenta.white);
-
-    if (files.length === 0) {
-      console.log("Empty Directory!".grey);
-      return;
-    }
-
-    files.forEach((file) => {
-      const icon = file.isDirectory() ? " [DIR] " : "📄 [FILE]";
-      const color = file.isDirectory() ? "blue" : "green";
-      console.log(`${icon} ${file.name}`[color].bold);
-    });
-  } catch (error) {
-    handleError(error, "listing files", "Directory");
-  }
-};
-
-const copyFile = async (sourceName, destName) => {
-  try {
-    await fs.copyFile(
-      getFilePath(sourceName),
-      getFilePath(destName),
-      fsSync.constants.COPYFILE_EXCL, // Don't overwrite existing
-    );
-    logSuccess(` Success: Copied '${sourceName}' to '${destName}'`);
-  } catch (error) {
-    handleError(error, "copying file", destName);
-  }
-};
-
-const moveFile = async (filename, destinationFolder) => {
-  try {
-    const oldPath = getFilePath(filename);
-    const newPath = path.join(
-      dirPath,
-      destinationFolder,
-      path.basename(filename),
-    );
-
-    await fs.rename(oldPath, newPath);
-    logSuccess(`Success: Moved '${filename}' to '${destinationFolder}/'`);
-  } catch (error) {
-    // Rename implies moving, so checking source existence
-    handleError(error, "moving file", filename);
-  }
-};
-
-const searchInFile = async (filename, keyword) => {
-  try {
-    const data = await fs.readFile(getFilePath(filename), "utf-8");
-    const lines = data.split("\n");
-    let foundCount = 0;
-
-    console.log(`\n Searching for "${keyword}" in '${filename}'...`.cyan);
-    console.log("-".repeat(40).grey);
-
-    lines.forEach((line, index) => {
-      if (line.includes(keyword)) {
-        foundCount++;
-        console.log(`Line ${index + 1}: `.yellow.bold + line.trim());
-      }
-    });
-
-    console.log("-".repeat(40).grey);
-
-    if (foundCount === 0) console.log(` No matches found.`.red);
-    else logSuccess(` Total matches found: ${foundCount}`);
-  } catch (error) {
-    handleError(error, "searching file", filename);
-  }
-};
-
-// ==========================================
-// 4. EDITING & TOOLS (Replace, Clear, Zip)
-// ==========================================
-
-const replaceText = async (filename, oldText, newText) => {
-  try {
-    const filePath = getFilePath(filename);
-    const data = await fs.readFile(filePath, "utf-8");
-
-    if (!data.includes(oldText)) {
-      console.log(` Error: Text '${oldText}' not found!`.red);
-      return;
-    }
-
-    await createBackup(filename);
+  listFiles: withErrorHandling(async () => {
+    const files = await fs.readdir(CONFIG.baseDir, { withFileTypes: true });
+    console.log(`\nFiles in Directory:`.bgMagenta.white);
     
-    const newData = data.split(oldText).join(newText);
-    await fs.writeFile(filePath, newData);
-    logSuccess(` Success: Replaced '${oldText}' with '${newText}'`);
-  } catch (error) {
-    handleError(error, "replacing text", filename);
-  }
+    if (files.length === 0) return console.log("   (Empty)".grey);
+
+    files.forEach(f => {
+      const [icon, color] = f.isDirectory() ? ["📁", "blue"] : ["📄", "green"];
+      console.log(`   ${icon} ${f.name}`[color]);
+    });
+  }, () => 'directory'),
 };
 
-const overwriteFile = async (filename, newContent) => {
-  try {
-    const filePath = getFilePath(filename);
-    await fs.access(filePath); // Ensure file exists first
+// ==========================================
+// 4. ADVANCED TOOLS
+// ==========================================
 
-    await createBackup(filename);
+const advancedOps = {
+  getFileInfo: withErrorHandling(async (filename) => {
+    const stats = await fs.stat(resolvePath(filename));
+    console.log(`\n ℹInfo: ${filename}`.cyan.bold);
+    console.table({
+      Size: `${(stats.size / 1024).toFixed(2)} KB`,
+      Created: stats.birthtime.toLocaleString(),
+      Modified: stats.mtime.toLocaleString(),
+    });
+  }, (f) => f),
 
-    await fs.writeFile(filePath, newContent);
-    logSuccess(` Success: File '${filename}' rewritten!`);
-  } catch (error) {
-    handleError(error, "overwriting file", filename);
-  }
+  searchInFile: withErrorHandling(async (filename, keyword) => {
+    const data = await fs.readFile(resolvePath(filename), "utf-8");
+    const matches = data.split("\n")
+      .map((line, i) => ({ line: line.trim(), idx: i + 1 }))
+      .filter(m => m.line.includes(keyword));
+
+    console.log(`\nSearch: "${keyword}" in '${filename}'`.cyan);
+    if (!matches.length) return console.log("   No matches.".red);
+    matches.forEach(m => console.log(`   Line ${m.idx}: `.yellow + m.line));
+  }, (f) => f),
+
+  replaceText: withErrorHandling(async (filename, oldTxt, newTxt) => {
+    const filePath = resolvePath(filename);
+    const data = await fs.readFile(filePath, "utf-8");
+    if (!data.includes(oldTxt)) throw new Error(`Text '${oldTxt}' not found`);
+
+    await ensureBackup(filename);
+    await fs.writeFile(filePath, data.split(oldTxt).join(newTxt));
+    logSuccess(`Replaced text in: ${filename}`);
+  }, (f) => f),
+
+  compressFile: withErrorHandling(async (filename) => {
+    const src = fsSync.createReadStream(resolvePath(filename));
+    const dest = fsSync.createWriteStream(resolvePath(`${filename}.gz`));
+    await pipeline(src, zlib.createGzip(), dest);
+    logSuccess(`Compressed: ${filename}.gz`);
+  }, (f) => f),
+
+  revertFile: withErrorHandling(async (filename) => {
+    const original = resolvePath(filename);
+    const backup = resolveBackup(filename);
+    await fs.access(backup);
+    await fs.copyFile(backup, original);
+    logSuccess(`Reverted '${filename}' from backup!`);
+  }, (f) => f),
 };
 
-const clearFile = async (filename) => {
-  try {
-    await fs.writeFile(getFilePath(filename), "");
-    console.log(` Success: '${filename}' cleared!`.magenta.bold);
-  } catch (error) {
-    handleError(error, "clearing file", filename);
-  }
-};
+// ==========================================
+// 5. SYSTEM DIAGNOSTICS
+// ==========================================
 
-const compressFile = async (filename) => {
-  try {
-    const sourcePath = getFilePath(filename);
-    const destPath = getFilePath(filename + ".gz");
-
-    const sourceStream = fsSync.createReadStream(sourcePath);
-    const destStream = fsSync.createWriteStream(destPath);
-    const gzip = zlib.createGzip();
-
-    await pipeline(sourceStream, gzip, destStream);
-    logSuccess(` Success: Compressed to '${filename}.gz'`);
-  } catch (error) {
-    handleError(error, "compressing file", filename);
-  }
-};
-
-const countFileStats = async (filename) => {
-    try {
-        const data = await fs.readFile(getFilePath(filename), 'utf-8');
-        
-        const lines = data.split('\n').length;
-        const words = data.split(/\s+/).filter(word => word !== '').length;
-        const chars = data.length;
-
-        console.log(`\n --- Analysis of '${filename}' ---`.bgYellow.black);
-        console.log(` Lines: ${lines}`.cyan.bold);
-        console.log(`  Words: ${words}`.green.bold);
-        console.log(` Characters: ${chars}`.blue);
-        
-    } catch (error) {
-        handleError(error, "analyzing file", filename);
+const getNetworkIPs = () => {
+  const nets = os.networkInterfaces();
+  const results = [];
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      // Handle Node v18+ family type (IPv4 string or 4 number)
+      const isIPv4 = net.family === 'IPv4' || net.family === 4;
+      if (isIPv4 && !net.internal) results.push(`${name}: ${net.address}`);
     }
+  }
+  return results.length ? results.join(" | ") : "Not Connected";
 };
 
-const getSystemInfo = async () => {
+const systemOps = {
+  getSystemInfo: () => {
     try {
-        console.log(`\n --- System Information ---`.bgCyan.black);
-        console.log(` OS: ${os.type()} ${os.release()} (${os.arch()})`.green);
-        console.log(` Total RAM: ${(os.totalmem() / 1024 / 1024 / 1024).toFixed(2)} GB`.yellow);
-        console.log(` Free RAM: ${(os.freemem() / 1024 / 1024 / 1024).toFixed(2)} GB`.yellow);
-        console.log(` CPU: ${os.cpus()[0].model}`.magenta);
-        console.log(` Home Dir: ${os.homedir()}`.grey);
-        console.log(`⏱  Uptime: ${(os.uptime() / 3600).toFixed(2)} Hours`.cyan);
-    } catch (error) {
-        console.log(` Error fetching system info: ${error.message}`.red);
+      console.log(`\nADVANCED SYSTEM DIAGNOSTICS`.bgCyan.black.bold);
+
+      // Memory Calculations
+      const total = os.totalmem();
+      const free = os.freemem();
+      const percent = (((total - free) / total) * 100).toFixed(1);
+      const ramColor = percent > 80 ? "red" : "green";
+
+      // Uptime Formatter
+      const uptimeSec = os.uptime();
+      const uptime = `${Math.floor(uptimeSec / 3600)}h ${Math.floor((uptimeSec % 3600) / 60)}m`;
+
+      console.table({
+        "OS": `${os.type()} ${os.release()}`,
+        "CPU": `${os.cpus()[0].model} (${os.cpus().length} Cores)`,
+        "Total RAM": formatBytes(total),
+        "Free RAM": formatBytes(free),
+        "RAM Usage": `${percent}%`[ramColor],
+        "IP Address": getNetworkIPs().yellow.bold,
+        "Uptime": uptime
+      });
+    } catch (e) {
+      console.log("Error fetching system info".red);
     }
+  },
+
+  fetchApiData: withErrorHandling(async (filename, url) => {
+    console.log(`Fetching ${url}...`.cyan);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await fs.writeFile(resolvePath(filename), JSON.stringify(await res.json(), null, 2));
+    logSuccess(`Data saved to: ${filename}`);
+  }, (f) => f),
 };
 
-
-// 20. API से डेटा लाना और सेव करना (Fetch API)
-const fetchApiData = async (filename, url) => {
-    try {
-        console.log(`\n Connecting to: ${url}...`.cyan);
-        
-        // Step 1: Internet se data mangwayein
-        const response = await fetch(url);
-
-        // Check karein agar request fail hui (e.g. 404 Not Found)
-        if (!response.ok) {
-            throw new Error(`HTTP Error! Status: ${response.status}`);
-        }
-
-        // Step 2: Data ko JSON me convert karein
-        const data = await response.json();
-
-        // Step 3: JSON ko sunder (pretty) text me badlein
-        // null, 2 ka matlab hai 2 spaces ka indentation (safai se dikhega)
-        const content = JSON.stringify(data, null, 2);
-
-        // Step 4: File me save karein
-        const filePath = getFilePath(filename);
-        await fs.writeFile(filePath, content);
-        
-        logSuccess(` Success: API data saved to '${filename}'`);
-        
-    } catch (error) {
-        handleError(error, "fetching API data", url);
-    }
-};
-
-
-const revertFile = async (filename) => {
-    const originalPath = getFilePath(filename);
-    const backupPath = path.join(backupDir, filename + '.bak');
-
-    try {
-        // Check karein backup hai ya nahi
-        await fs.access(backupPath);
-
-        // Backup ko wapis original jagah copy karein (Restore)
-        await fs.copyFile(backupPath, originalPath);
-        
-        console.log(`⏮  Success: '${filename}' reverted to last saved version!`.cyan.bold);
-        
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            console.log(` Error: No backup found for '${filename}'. (You haven't edited it yet)`.red);
-        } else {
-            console.log(` Error reverting file: ${error.message}`.red);
-        }
-    }
-};
-
-
+// ==========================================
+// EXPORTS
+// ==========================================
 module.exports = {
-  createFile,
-  readFile,
-  deleteFile,
-  appendToFile,
-  renameFile,
-  createFolder,
-  deleteFolder,
-  listFiles,
-  getFileInfo,
-  copyFile,
-  moveFile,
-  searchInFile,
-  replaceText,
-  overwriteFile,
-  clearFile,
-  compressFile,
-  countFileStats,
-  getSystemInfo,
-  fetchApiData,
-  revertFile
+  ...coreOps,
+  ...folderOps,
+  ...advancedOps,
+  ...systemOps,
 };
