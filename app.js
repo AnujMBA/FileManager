@@ -1,157 +1,154 @@
 const readline = require("readline/promises");
 const { stdin: input, stdout: output } = require("process");
-const manager = require("./fileManager");
+const manager = require("./fileManager"); // Ensure this matches your filename
 require("colors");
 
 // ==========================================
-// 1. UI & INPUT HELPERS
+// 1. UI CONFIGURATION
 // ==========================================
 
 const rl = readline.createInterface({ input, output });
 
 const UI = {
-    printTitle: () => {
-        console.clear();
-        console.log("\n File Manager Pro".rainbow.bold);
-        console.log("----------------------------------".grey);
-    },
+  // Wrapper for User Input
+  ask: async (query, color = "white") => {
+    return (await rl.question(` ${query[color]} `)).trim();
+  },
 
-    printMenu: () => {
-        const categories = {
-            "File Ops": ["create", "read", "append", "delete", "rename"],
-            "Folder Ops": ["mkdir", "rmdir", "list"],
-            "Tools": ["search", "copy", "move", "zip", "fetch"],
-            "System": ["info", "stats", "os", "exit"]
-        };
+  // Wrapper for Filename Input (Optional Extension)
+  askFile: async (actionName) => {
+    const name = await UI.ask(`${actionName} Filename:`, "yellow");
+    return name ? name : null;
+  },
 
-        Object.entries(categories).forEach(([category, cmds]) => {
-            const cmdString = cmds.map(c => c.green).join(", ");
-            console.log(` ${category.bold.white}: ${cmdString}`);
-        });
-        console.log("----------------------------------".grey);
-    },
+  printBanner: () => {
+    console.clear();
+    console.log(
+      `
+   ╔════════════════════════════════════════╗
+   ║          NODE FILE MANAGER PRO         ║
+   ╚════════════════════════════════════════╝
+        `.cyan.bold,
+    );
+  },
 
-    ask: async (query, color = "white") => {
-        return (await rl.question(query[color] + " ")).trim();
-    },
+  printMenu: () => {
+    const menu = {
+      "📄 Files": ["create", "read", "append", "delete", "rename", "open"],
+      "📁 Folders": ["mkdir", "rmdir", "list", "tree"],
+      "🛠  Tools": ["search", "copy", "zip", "fetch", "bulk-del"],
+      "🔐 Secure": ["encrypt", "decrypt"],
+      "💻 System": ["stats", "exit"],
+    };
 
-    // Smart Filename asker (Extension handle karta hai)
-    askFileName: async (promptMsg, defaultExt = "txt") => {
-        const name = await UI.ask(promptMsg, "yellow");
-        if (!name) return null; 
-
-        const hasExt = name.includes(".");
-        return hasExt ? name : `${name}.${defaultExt}`;
-    }
+    Object.entries(menu).forEach(([category, cmds]) => {
+      console.log(` ${category.bold.white}`);
+      console.log(` └─ ${cmds.join(" | ").grey}`);
+    });
+    console.log("──────────────────────────────────────────".grey);
+  },
 };
 
 // ==========================================
-// 2. COMMAND HANDLERS (The Brain)
+// 2. LOGIC HANDLERS
 // ==========================================
 
+// Helper to reduce repetitive "Ask filename -> Call function" code
+const executeSimpleOp = async (actionName, managerFn) => {
+  const file = await UI.askFile(actionName);
+  if (file) await managerFn(file);
+};
+
 const COMMANDS = {
-    // --- File Operations ---
-    create: async () => {
-        const name = await UI.askFileName("  File Name:");
-        const content = await UI.ask("   Content:", "cyan");
-        if (name) await manager.createFile(name, content);
-    },
-    
-    read: async () => {
-        const name = await UI.askFileName("  Read File:");
-        if (name) await manager.readFile(name);
-    },
-    
-    append: async () => {
-        const name = await UI.askFileName("  Append to File:");
-        const content = await UI.ask("  New Content:", "cyan");
-        if (name) await manager.appendToFile(name, content);
-    },
-    
-    delete: async () => {
-        const name = await UI.askFileName("   Delete File:", "red");
-        if (name) await manager.deleteFile(name);
-    },
-
-    rename: async () => {
-        const oldName = await UI.askFileName("   Old Name:");
-        const newName = await UI.askFileName("  New Name:");
-        if (oldName && newName) await manager.renameFile(oldName, newName);
-    },
-
-    // --- Folder Operations ---
-    mkdir: async () => {
-        const name = await UI.ask("  Folder Name:", "yellow");
-        if (name) await manager.createFolder(name);
-    },
-
-    rmdir: async () => {
-        const name = await UI.ask("   Folder Name to Delete:", "red");
-        if (name) await manager.deleteFolder(name);
-    },
-
-    list: async () => await manager.listFiles(),
-
-    // --- Advanced Tools ---
-    search: async () => {
-        const name = await UI.askFileName("🔍  Search in File:");
-        const keyword = await UI.ask("🔑  Keyword:");
-        if (name && keyword) await manager.searchInFile(name, keyword);
-    },
-
-    copy: async () => {
-        const src = await UI.askFileName("Source File:");
-        const dest = await UI.askFileName("Destination File:");
-        if (src && dest) await manager.copyFile(src, dest);
-    },
-
-    move: async () => {
-        const file = await UI.askFileName("Move File:");
-        const folder = await UI.ask("To Folder:", "yellow");
-        if (file && folder) await manager.moveFile(file, folder);
-    },
-    
-    fetch: async () => {
-        const url = await UI.ask("🌐  API URL:", "cyan");
-        const name = await UI.askFileName("💾  Save as (e.g., data.json):", "json");
-        if (url && name) await manager.fetchApiData(name, url);
-    },
-
-    zip: async () => {
-        const name = await UI.askFileName("📦  Compress File:");
-        if (name) await manager.compressFile(name);
-    },
-
-    // --- System & Info ---
-    info: async () => {
-        const name = await UI.askFileName("ℹ️   File Name:");
-        if (name) await manager.getFileInfo(name);
-    },
-
-    stats: async () => {
-        const name = await UI.askFileName("📊  Analyze File:");
-        if (name) await manager.countFileStats(name);
-    },
-
-    os: async () => await manager.getSystemInfo(),
-
-    // --- Editing (Extra) ---
-    replace: async () => {
-        const name = await UI.askFileName("  Edit File:");
-        const oldTxt = await UI.ask("  Old Text:");
-        const newTxt = await UI.ask("  New Text:");
-        if (name) await manager.replaceText(name, oldTxt, newTxt);
-    },
-    
-    revert: async () => {
-        const name = await UI.askFileName("  Revert File:");
-        if (name) await manager.revertFile(name);
-    },
-    
-    clear: async () => {
-        const name = await UI.askFileName("  Empty File:");
-        if (name) await manager.clearFile(name);
+  // --- File Ops ---
+  create: async () => {
+    const name = await UI.askFile("New");
+    if (name) {
+      const content = await UI.ask("Enter Content:", "cyan");
+      await manager.create(name, content);
     }
+  },
+
+  read: () => executeSimpleOp("Read", manager.read),
+  delete: () => executeSimpleOp("Delete", manager.delete),
+  zip: () => executeSimpleOp("Compress", manager.compress),
+  info: () => executeSimpleOp("Info", manager.info),
+  encrypt: () => executeSimpleOp("Lock", manager.encrypt),
+  decrypt: () => executeSimpleOp("Unlock", manager.decrypt),
+  open: () => executeSimpleOp("Open", manager.open),
+
+  append: async () => {
+    const name = await UI.askFile("Target");
+    if (name) {
+      const content = await UI.ask("Text to Append:", "cyan");
+      await manager.append(name, content);
+    }
+  },
+
+  rename: async () => {
+    const oldName = await UI.askFile("Current");
+    if (oldName) {
+      const newName = await UI.ask("New Filename:", "yellow");
+      if (newName) await manager.rename(oldName, newName);
+    }
+  },
+
+  copy: async () => {
+    const src = await UI.askFile("Source");
+    if (src) {
+      const dest = await UI.ask("Destination Filename:", "yellow");
+      await manager.copy(src, dest);
+    }
+  },
+
+  search: async () => {
+    const name = await UI.askFile("Search in");
+    if (name) {
+      const keyword = await UI.ask("Keyword:", "magenta");
+      await manager.search(name, keyword);
+    }
+  },
+
+  // --- Folder & Bulk Ops ---
+  list: async () => await manager.list(),
+  tree: async () => await manager.tree(),
+
+  mkdir: async () => {
+    const name = await UI.ask("Folder Name:", "yellow");
+    if (name) await manager.create(name); // Overloaded create in manager or separate mkdir
+  },
+
+  rmdir: async () => {
+    const name = await UI.ask("Folder to Delete:", "red");
+    if (name) await manager.delete(name); // Manager delete handles both usually, or use manager.deleteDir if separated
+  },
+
+  "bulk-del": async () => {
+    const pattern = await UI.ask(
+      "Delete files containing (e.g., .tmp):",
+      "red",
+    );
+    if (pattern) {
+      const confirm = await UI.ask(
+        `Type 'yes' to delete all files matching '${pattern}':`,
+        "bgRed",
+      );
+      if (confirm.toLowerCase() === "yes") {
+        await manager.deleteByPattern(pattern);
+      } else {
+        console.log("Operation Cancelled.".green);
+      }
+    }
+  },
+
+  // --- Network & System ---
+  fetch: async () => {
+    const url = await UI.ask("API URL:", "cyan");
+    const name = await UI.askFile("Save JSON as");
+    if (url && name) await manager.fetchRemote(name, url);
+  },
+
+  stats: async () => await manager.stats(),
 };
 
 // ==========================================
@@ -159,33 +156,37 @@ const COMMANDS = {
 // ==========================================
 
 const startApp = async () => {
-    UI.printTitle();
-    UI.printMenu();
+  UI.printBanner();
+  UI.printMenu();
 
-    while (true) {
-        try {
-            const input = await UI.ask("\n  Command:", "bgBlue");
-            const command = input.toLowerCase();
+  const recursiveAsk = async () => {
+    try {
+      const input = await UI.ask("cmd >", "green");
+      const command = input.trim().toLowerCase();
 
-            if (command === "exit") {
-                console.log("\n  Bye Bye! Happy Coding!".rainbow);
-                rl.close();
-                break;
-            }
+      if (command === "exit" || command === "quit") {
+        console.log("\nGoodbye\n".rainbow);
+        rl.close();
+        process.exit(0);
+      }
 
-            const action = COMMANDS[command];
+      if (COMMANDS[command]) {
+        console.log(""); // Spacing
+        await COMMANDS[command]();
+        console.log(""); // Spacing
+      } else if (command !== "") {
+        console.log(`Unknown command. Try 'list' or 'help'.`.red);
+      }
 
-            if (action) {
-                await action(); 
-            } else {
-                console.log("   Invalid Command. Try 'list' or 'help'".red);
-            }
-
-        } catch (error) {
-            console.log("   Unexpected Error:".red, error.message);
-        }
+      // Loop back
+      recursiveAsk();
+    } catch (error) {
+      console.log("Critical UI Error:".bgRed, error.message);
+      recursiveAsk(); // Try to recover
     }
+  };
+
+  recursiveAsk();
 };
 
-// Start the engine!
 startApp();
